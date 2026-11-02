@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scan3D — Uyim</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:#f3f5f8;color:#1c2430;padding-bottom:40px}
+nav{display:flex;position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #dde3ea}
+nav button{flex:1;padding:14px;border:0;background:none;font-size:16px;font-weight:600;color:#667}
+nav button.on{color:#0b6bff;border-bottom:3px solid #0b6bff}
+.tab{padding:12px;max-width:760px;margin:auto}
+.hint{font-size:14px;color:#556;line-height:1.4}
+#slots{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.slot{background:#fff;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:4px;align-items:center;text-align:center;box-shadow:0 1px 3px #0001;cursor:pointer}
+.slot small{color:#778;font-size:12px}
+.slot canvas{width:100%;aspect-ratio:4/3;background:#e8ecf1;border-radius:8px}
+.btn{background:#e6efff;color:#0b6bff;padding:6px 12px;border-radius:8px;font-size:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.row input[type=number]{width:70px}
+input,select,button{font:inherit;padding:9px;border-radius:8px;border:1px solid #cbd3dd;background:#fff}
+button{cursor:pointer}
+.main{background:#0b6bff;color:#fff;border:0;font-weight:600;padding:12px 18px}
+#go{width:100%}
+#pv,#hv{width:100%;height:50vh;border-radius:12px;display:block;touch-action:none;background:#dfe6ee}
+#hv{height:58vh}
+#lib{display:flex;gap:8px;flex-wrap:wrap}
+.chip{background:#fff;border:1px solid #cbd3dd;border-radius:20px;padding:6px 12px;display:flex;gap:8px;align-items:center}
+.chip i{font-style:normal;color:#c33;cursor:pointer}
+
+[hidden]{display:none!important}
+#cam{position:relative;margin:auto;background:#111;border-radius:12px;overflow:hidden;width:100%;aspect-ratio:3/4}
+#cam video,#cam canvas{position:absolute;inset:0;width:100%;height:100%;border-radius:0}
+#cam video{object-fit:cover}
+#msg{position:absolute;left:8px;right:8px;top:8px;text-align:center;color:#fff;background:#000a;border-radius:10px;padding:8px;font-size:14px;z-index:2}
+#cam #ov{touch-action:none}
+</style>
+</head>
+<body>
+<nav><button data-t="scan" class="on">📷 Skaner</button><button data-t="house">🏠 Uyim</button></nav>
+
+<section id="t_scan" class="tab">
+  <div id="camBox">
+    <div id="cam"><video id="vid" playsinline muted autoplay></video><canvas id="ov"></canvas><div id="msg">Kamerani oching va obyektni yashil nuqtaga qo'ying.</div></div>
+    <div class="row">
+      <button id="open" class="main">📷 Kamerani ochish</button>
+      <button id="start" class="main" hidden>▶ Boshlash</button>
+      <button id="snap" class="main" hidden>📸 Rasm olish</button>
+      <button id="go" hidden>⚙️ 3D yasash</button>
+      <select id="res"><option value="48">Tez</option><option value="64" selected>O'rta</option><option value="88">Yuqori</option></select>
+    </div>
+    <p class="hint">Telefonni tik (portret) ushlang. Obyekt yashil nuqtada tursin, uning atrofida sekin aylaning, tepadan ham suratga oling. Sfera binafsha bo'lgan sari kadrlar avtomatik olinadi.</p>
+  </div>
+  <div id="resBox" hidden>
+    <canvas id="pv"></canvas>
+    <div class="row">
+      <input id="nm" placeholder="Nomi (masalan: Stakan)">
+      <input id="hc" type="number" value="50" min="1"> <span>sm (balandligi)</span>
+      <button id="save" class="main">🏠 Uyga qo'yish</button>
+      <button id="redo">↺ Qayta skanerlash</button>
+    </div>
+  </div>
+</section>
+
+<section id="t_house" class="tab" hidden>
+  <canvas id="hv"></canvas>
+  <div class="row">
+    <button id="rot">⟳ Burish</button><button id="big">＋</button><button id="small">－</button><button id="del">🗑</button>
+  </div>
+  <p class="hint">Buyumni bosib sudrang. Bo'sh joyni sudrasangiz uy aylanadi, ikki barmoq bilan yaqinlashtiring.</p>
+  <div id="lib"></div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+class Viewer{
+  constructor(canvas){
+    const c=this.c=canvas;
+    this.r=new THREE.WebGLRenderer({canvas:c,antialias:true});
+    this.r.setPixelRatio(Math.min(devicePixelRatio,2));
+    this.s=new THREE.Scene(); this.s.background=new THREE.Color(0xdfe6ee);
+    this.cam=new THREE.PerspectiveCamera(50,1,.05,100);
+    this.s.add(new THREE.HemisphereLight(0xffffff,0x667788,.95));
+    const d=new THREE.DirectionalLight(0xffffff,.7); d.position.set(3,6,4); this.s.add(d);
+    this.t=new THREE.Vector3(0,.5,0); this.az=.8; this.el=.5; this.dist=3; this.auto=false;
+    this.p=new Map(); this.cu=false; this.rc=new THREE.Raycaster();
+    c.addEventListener('pointerdown',e=>{c.setPointerCapture(e.pointerId);this.p.set(e.pointerId,[e.clientX,e.clientY]);this.cu=this.p.size===1&&this.onDown?!!this.onDown(e):false;});
+    c.addEventListener('pointermove',e=>{
+      const o=this.p.get(e.pointerId); if(!o)return; const n=[e.clientX,e.clientY];
+      if(this.cu) this.onMove(e);
+      else if(this.p.size===1){this.az-=(n[0]-o[0])*.008;this.el=clamp(this.el+(n[1]-o[1])*.008,.05,1.5);}
+      else if(this.p.size===2){
+        const a=[...this.p.values()],d0=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);
+        this.p.set(e.pointerId,n);
+        const b=[...this.p.values()],d1=Math.hypot(b[0][0]-b[1][0],b[0][1]-b[1][1]);
+        this.dist=clamp(this.dist*d0/Math.max(d1,1),.5,20); return;}
+      this.p.set(e.pointerId,n);
+    });
+    const up=e=>{this.p.delete(e.pointerId);if(this.cu&&this.onUp)this.onUp();this.cu=false;};
+    c.addEventListener('pointerup',up); c.addEventListener('pointercancel',up);
+    c.addEventListener('wheel',e=>{e.preventDefault();this.dist=clamp(this.dist*(1+e.deltaY*.001),.5,20);},{passive:false});
+    const loop=()=>{requestAnimationFrame(loop);
+      const w=c.clientWidth,h=c.clientHeight; if(!w||!h)return;
+      if(this.W!==w||this.H!==h){this.W=w;this.H=h;this.r.setSize(w,h,false);this.cam.aspect=w/h;this.cam.updateProjectionMatrix();}
+      if(this.auto&&!this.p.size)this.az+=.01;
+      const ce=Math.cos(this.el);
+      this.cam.position.set(this.t.x+this.dist*ce*Math.sin(this.az),this.t.y+this.dist*Math.sin(this.el),this.t.z+this.dist*ce*Math.cos(this.az));
+      this.cam.lookAt(this.t); this.r.render(this.s,this.cam);};
+    loop();
+  }
+  ray(e){const r=this.c.getBoundingClientRect();
+    this.rc.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-((e.clientY-r.top)/r.height)*2+1),this.cam);return this.rc;}
+}
+
+// ---- Siluet ajratish (fon rangi chetlardan, avtomatik chegara) ----
+function largest(m,w,h,ctr){
+  const lab=new Int32Array(w*h),st=new Int32Array(w*h);let best=-1,bl=0,n=0;
+  for(let s=0;s<w*h;s++){
+    if(!m[s]||lab[s])continue;n++;let sp=0,cnt=0,cc=0;st[sp++]=s;lab[s]=n;
+    while(sp){const p=st[--sp];cnt++;const x=p%w,y=(p/w)|0;
+      if(x>w*.25&&x<w*.75&&y>h*.25&&y<h*.75)cc++;
+      for(const q of [x>0?p-1:-1,x<w-1?p+1:-1,y>0?p-w:-1,y<h-1?p+w:-1])
+        if(q>=0&&m[q]&&!lab[q]){lab[q]=n;st[sp++]=q;}}
+    const sc=ctr?cc*1e6+cnt:cnt;if(sc>best){best=sc;bl=n;}
+  }
+  return m.map((v,i)=>lab[i]===bl?1:0);
+}
+function fillHoles(m,w,h){
+  const bg=new Uint8Array(w*h),st=new Int32Array(w*h);let sp=0;
+  const push=p=>{if(!m[p]&&!bg[p]){bg[p]=1;st[sp++]=p;}};
+  for(let x=0;x<w;x++){push(x);push((h-1)*w+x);}for(let y=0;y<h;y++){push(y*w);push(y*w+w-1);}
+  while(sp){const p=st[--sp],x=p%w,y=(p/w)|0;if(x>0)push(p-1);if(x<w-1)push(p+1);if(y>0)push(p-w);if(y<h-1)push(p+w);}
+  return bg.map(v=>v?0:1);
+}
+function segment(cv,thr,ctr){
+  const w=cv.width,h=cv.height,d=cv.getContext('2d').getImageData(0,0,w,h).data;
+  const b=Math.max(2,Math.round(Math.min(w,h)*.04)),R=[],G=[],B=[];
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(x<b||y<b||x>=w-b||y>=h-b){const i=(y*w+x)*4;R.push(d[i]);G.push(d[i+1]);B.push(d[i+2]);}
+  const med=a=>a.sort((p,q)=>p-q)[a.length>>1],br=med(R),bg=med(G),bb=med(B);
+  const D=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++)D[i]=Math.hypot(d[i*4]-br,d[i*4+1]-bg,d[i*4+2]-bb);
+  if(!thr){
+    const hist=new Float64Array(256);for(const v of D)hist[Math.min(255,v|0)]++;
+    let tot=w*h,sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
+    let wB=0,sB=0,best=-1;thr=30;
+    for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=tot-wB;if(!wF)break;sB+=t*hist[t];
+      const mB=sB/wB,mF=(sum-sB)/wF,v=wB*wF*(mB-mF)*(mB-mF);if(v>best){best=v;thr=t;}}
+    thr=Math.max(18,thr);
+  }
+  let m=new Uint8Array(w*h);for(let i=0;i<w*h;i++)m[i]=D[i]>thr?1:0;
+  m=fillHoles(largest(m,w,h,ctr),w,h);
+  let x0=w,y0=h,x1=-1,y1=-1;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(m[y*w+x]){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}
+  return {w,h,mask:m,data:d,bb:x1<0?null:{x0,y0,x1,y1}};
+}
+// ---- Aylanma kadrlardan 3D (visual hull) ----
+// Kadr: {w,h,mask,data,bb, r,u,c} — r: telefon o'ng vektori, u: tepa vektori, c: obyektdan kameraga yo'nalish (dunyo: x sharq, y shimol, z yuqori)
+const DIRS=[[1,0,0,1,2],[-1,0,0,2,1],[0,1,0,2,0],[0,-1,0,0,2],[0,0,1,0,1],[0,0,-1,1,0]];
+function carveOrbit(F,N){
+  const ext=F.map(f=>Math.max(f.bb.x1-f.bb.x0,f.bb.y1-f.bb.y0)).sort((a,b)=>a-b);
+  const S=ext[Math.floor(ext.length*.75)]/1.6,tol=Math.max(1,Math.floor(F.length*.08));
+  const occ=new Uint8Array(N*N*N),id=(x,y,z)=>x+N*(y+N*z),cc=i=>(i+.5)/N*2-1;
+  const prj=(f,a,b,c)=>[clamp((f.w/2+S*(a*f.r[0]+b*f.r[1]+c*f.r[2]))|0,-1,f.w),clamp((f.h/2-S*(a*f.u[0]+b*f.u[1]+c*f.u[2]))|0,-1,f.h)];
+  for(let z=0;z<N;z++)for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    const a=cc(x),b=cc(y),c=cc(z);let bad=0;
+    for(const f of F){
+      const px=(f.w/2+S*(a*f.r[0]+b*f.r[1]+c*f.r[2]))|0,py=(f.h/2-S*(a*f.u[0]+b*f.u[1]+c*f.u[2]))|0;
+      if(px<0||py<0||px>=f.w||py>=f.h)continue;
+      if(!f.mask[py*f.w+px]&&++bad>tol)break;}
+    occ[id(x,y,z)]=bad<=tol?1:0;}
+  let x0=N,y0=N,z0=N,x1=-1,y1=-1,z1=-1;
+  for(let z=0;z<N;z++)for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(occ[id(x,y,z)]){
+    if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;if(z<z0)z0=z;if(z>z1)z1=z;}
+  if(x1<0)throw new Error("Model chiqmadi. Obyektni yashil nuqtada ushlab, qayta urinib ko'ring.");
+  const s=1/(z1-z0+1),cx=(x0+x1+1)/2,cy=(y0+y1+1)/2,pos=[],col=[],nor=[];
+  const empty=(x,y,z)=>x<0||y<0||z<0||x>=N||y>=N||z>=N||!occ[id(x,y,z)];
+  for(let z=z0;z<=z1;z++)for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+    if(!occ[id(x,y,z)])continue;
+    for(const d of DIRS){
+      if(!empty(x+d[0],y+d[1],z+d[2]))continue;
+      let best=F[0],bd=-9;for(const f of F){const q=f.c[0]*d[0]+f.c[1]*d[1]+f.c[2]*d[2];if(q>bd){bd=q;best=f;}}
+      const [px,py]=prj(best,cc(x),cc(y),cc(z)),i=(clamp(py,0,best.h-1)*best.w+clamp(px,0,best.w-1))*4;
+      const c=[best.data[i]/255,best.data[i+1]/255,best.data[i+2]/255];
+      const base=[x,y,z],ax=[0,1,2].find(a=>d[a]);if(d[ax]>0)base[ax]++;
+      const q=[[0,0],[1,0],[1,1],[0,1]].map(([a,b])=>{const p=base.slice();p[d[3]]+=a;p[d[4]]+=b;return p;});
+      for(const k of [0,1,2,0,2,3]){const p=q[k];pos.push((p[0]-cx)*s,(p[2]-z0)*s,-(p[1]-cy)*s);col.push(...c);nor.push(d[0],d[2],-d[1]);}
+    }
+  }
+  return {pos:new Float32Array(pos),col:new Float32Array(col),nor:new Float32Array(nor)};
+}
+function meshFrom(m){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(m.pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(m.col,3));
+  g.setAttribute('normal',new THREE.BufferAttribute(m.nor,3));
+  return new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true}));
+}
+
+const $=s=>document.querySelector(s);
+const msg=t=>$('#msg').textContent=t;
+const NS=[12,10,6,1],EL=[0,25,50,75,90].map(d=>d*Math.PI/180),TAU=Math.PI*2,DEG=Math.PI/180;
+let SEC=[],FR=[],ST={},ori=null,az0=0,live=[],stream=null,lastCap=0,spd=1,prevZ=null,prevT=0,mi=0,MODEL=null;
+function tab(n){
+  document.querySelectorAll('.tab').forEach(e=>e.hidden=e.id!=='t_'+n);
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===n));
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>tab(b.dataset.t));
+
+// ---------- Sensorlar ----------
+function basis(a,b,g){
+  const ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b),cg=Math.cos(g),sg=Math.sin(g);
+  return {r:[ca*cg-sa*sb*sg,sa*cg+ca*sb*sg,-cb*sg],u:[-sa*cb,ca*cb,sb],z:[ca*sg+sa*sb*cg,sa*sg-ca*sb*cg,cb*cg]};
+}
+function posOf(B){
+  const el=Math.asin(clamp(B.z[2],-1,1));let az=Math.atan2(B.z[0],B.z[1])-az0;
+  return [((az%TAU)+TAU)%TAU,el];
+}
+function secOf(az,el){
+  let k=EL.findIndex((e,i)=>i<4&&el<EL[i+1]);if(k<0)k=3;
+  return SEC.find(s=>s.k===k&&s.i===Math.min(NS[k]-1,Math.floor(az/TAU*NS[k])));
+}
+addEventListener('deviceorientation',e=>{
+  if(e.beta==null)return;const t=performance.now(),B=basis((e.alpha||0)*DEG,e.beta*DEG,(e.gamma||0)*DEG);
+  if(prevZ){const dt=(t-prevT)/1000;if(dt>0){const dot=clamp(B.z[0]*prevZ[0]+B.z[1]*prevZ[1]+B.z[2]*prevZ[2],-1,1);spd=spd*.6+.4*Math.acos(dot)/dt;}}
+  prevZ=B.z;prevT=t;ori=B;ST.sensor=true;
+  if(ST.on&&!ST.manual){const [az,el]=posOf(B),s=secOf(az,Math.max(0,el));
+    if(s&&!s.done&&spd<.4&&t-lastCap>350)capture(s,B);}
+});
+
+// ---------- Kamera ----------
+function frameCanvas(v,max){
+  const k=Math.min(1,max/Math.max(v.videoWidth,v.videoHeight)),c=document.createElement('canvas');
+  c.width=Math.round(v.videoWidth*k);c.height=Math.round(v.videoHeight*k);
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);return c;
+}
+const areaOf=g=>g.mask.reduce((a,b)=>a+b,0)/(g.w*g.h);
+function capture(s,B){
+  const v=$('#vid');if(!v.videoWidth)return;
+  const g=segment(frameCanvas(v,240),0,true),a=areaOf(g);
+  if(!g.bb||a<.01||a>.8){msg("Obyekt aniq ko'rinmayapti. Uni yashil nuqtaga qo'ying.");return;}
+  g.r=B.r;g.u=B.u;g.c=B.z;FR.push(g);s.done=true;lastCap=performance.now();
+  if(navigator.vibrate)navigator.vibrate(30);updateUI();
+}
+function updateUI(){
+  const d=SEC.filter(s=>s.done).length,p=d/SEC.length;
+  $('#go').hidden=FR.length<6;
+  msg(p>=.9?'Tayyor! 3D yasalmoqda…':ST.manual?`Obyektni burib "Rasm olish" ni bosing. ${d}/${SEC.length}`:`Obyekt atrofida sekin aylaning. ${d}/${SEC.length}`);
+  if(p>=.9&&!ST.building)$('#go').click();
+}
+function fit(){
+  const v=$('#vid'),c=$('#cam');
+  c.style.aspectRatio=v.videoWidth+'/'+v.videoHeight;
+  c.style.width='min(100%,'+Math.round(innerHeight*.72*v.videoWidth/v.videoHeight)+'px)';
+}
+function stopCam(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;ST.on=false;live=[];}
+$('#open').onclick=async()=>{
+  try{if(window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission)await DeviceOrientationEvent.requestPermission();}catch(e){}
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:960}},audio:false});}
+  catch(e){msg('Kamera ochilmadi: '+e.message+' (HTTPS yoki localhost kerak)');return;}
+  const v=$('#vid');v.srcObject=stream;await v.play().catch(()=>{});
+  await new Promise(r=>{if(v.videoWidth)r();else v.onloadedmetadata=r;});
+  fit();$('#open').hidden=true;$('#start').hidden=false;
+  msg("Obyektni yashil nuqtaga qo'ying. Sariq nuqtalar obyektni topganini bildiradi. So'ng «Boshlash» ni bosing.");
+};
+$('#start').onclick=()=>{
+  ST.manual=!ST.sensor;ST.building=false;mkSectors();FR=[];mi=0;
+  if(ST.manual){az0=0;$('#snap').hidden=false;}
+  else az0=Math.atan2(ori.z[0],ori.z[1])-Math.PI/NS[0];
+  ST.on=true;$('#start').hidden=true;updateUI();
+};
+function mkSectors(){SEC=[];NS.forEach((n,k)=>{for(let i=0;i<n;i++)SEC.push({k,i,a0:i/n*TAU,a1:(i+1)/n*TAU,e0:EL[k],e1:EL[k+1],done:false});});}
+// sensor yo'q bo'lsa (kompyuter): qo'lda rejim
+$('#snap').onclick=()=>{
+  const s=SEC[mi];if(!s)return;const az=(s.a0+s.a1)/2,el=(s.e0+s.e1)/2;
+  const z=[Math.sin(az)*Math.cos(el),Math.cos(az)*Math.cos(el),Math.sin(el)];
+  let u=[-z[0]*z[2],-z[1]*z[2],1-z[2]*z[2]];const n=Math.hypot(...u);u=n<1e-3?[0,1,0]:u.map(q=>q/n);
+  const r=[u[1]*z[2]-u[2]*z[1],u[2]*z[0]-u[0]*z[2],u[0]*z[1]-u[1]*z[0]];
+  capture(s,{r,u,z});if(s.done)mi++;
+};
+// obyektga sariq nuqtalar (jonli)
+setInterval(()=>{
+  const v=$('#vid');if(!stream||!v.videoWidth||ST.busy)return;
+  const g=segment(frameCanvas(v,120),0,true);live=[];
+  if(!g.bb||areaOf(g)<.01||areaOf(g)>.8)return;
+  for(let y=4;y<g.h-4;y+=5)for(let x=4;x<g.w-4;x+=5){const i=y*g.w+x;
+    if(g.mask[i]&&g.mask[i-3]&&g.mask[i+3]&&g.mask[i-3*g.w]&&g.mask[i+3*g.w])live.push([x/g.w,y/g.h]);}
+},450);
+// ekran ustidagi chizma: yashil nuqta, sariq nuqtalar, sfera, foiz
+(function draw(){
+  requestAnimationFrame(draw);
+  const c=$('#ov'),w=c.clientWidth,h=c.clientHeight;if(!w)return;
+  if(c.width!==w||c.height!==h){c.width=w;c.height=h;}
+  const x=c.getContext('2d'),cx=w/2,cy=h/2,t=performance.now()/1000;x.clearRect(0,0,w,h);
+  if(!stream)return;
+  x.fillStyle='#ffe44d';live.forEach(p=>{x.beginPath();x.arc(p[0]*w,p[1]*h,2.4,0,TAU);x.fill();});
+  x.fillStyle='#2fe36b';x.beginPath();x.arc(cx,cy,7,0,TAU);x.fill();
+  x.strokeStyle='rgba(47,227,107,.85)';x.lineWidth=2;x.beginPath();x.arc(cx,cy,16+4*Math.sin(t*4),0,TAU);x.stroke();
+  if(!ST.on)return;
+  const R=Math.min(w,h)*.4,oy=cy+h*.05,tl=.6;
+  const dp=(a,e)=>[cx+Math.sin(a)*Math.cos(e)*R,oy-(Math.sin(e)*Math.cos(tl)-Math.cos(a)*Math.cos(e)*Math.sin(tl))*R];
+  SEC.forEach(s=>{
+    x.beginPath();const m=4;
+    for(let j=0;j<=m;j++){const p=dp(s.a0+(s.a1-s.a0)*j/m,s.e0);j?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1]);}
+    for(let j=m;j>=0;j--){const p=dp(s.a0+(s.a1-s.a0)*j/m,s.e1);x.lineTo(p[0],p[1]);}
+    x.closePath();x.fillStyle=s.done?'rgba(150,70,255,.5)':'rgba(255,255,255,.07)';x.fill();
+    x.strokeStyle='rgba(255,255,255,.55)';x.lineWidth=1;x.stroke();});
+  let cur=null;
+  if(ST.manual&&SEC[mi])cur=[(SEC[mi].a0+SEC[mi].a1)/2,(SEC[mi].e0+SEC[mi].e1)/2];
+  else if(ori)cur=posOf(ori);
+  if(cur){const p=dp(cur[0],Math.max(0,cur[1]));x.fillStyle='#fff';x.strokeStyle='#2fe36b';x.lineWidth=3;x.beginPath();x.arc(p[0],p[1],8,0,TAU);x.fill();x.stroke();}
+  const pr=SEC.filter(s=>s.done).length/SEC.length,rx=cx,ry=h-48;
+  x.fillStyle='#000a';x.beginPath();x.arc(rx,ry,30,0,TAU);x.fill();
+  x.strokeStyle='#9646ff';x.lineWidth=5;x.beginPath();x.arc(rx,ry,26,-Math.PI/2,-Math.PI/2+TAU*pr);x.stroke();
+  x.fillStyle='#fff';x.font='bold 14px system-ui';x.textAlign='center';x.textBaseline='middle';x.fillText(Math.round(pr*100)+'%',rx,ry);
+})();
+
+// ---------- 3D yasash ----------
+const pv=new Viewer($('#pv'));pv.auto=true;let pmesh=null;
+$('#go').onclick=()=>{
+  if(ST.building&&!ST.retry)return;ST.building=true;ST.busy=true;msg('Hisoblanmoqda…');
+  setTimeout(()=>{try{
+    MODEL=carveOrbit(FR,+$('#res').value);
+    stopCam();$('#camBox').hidden=true;$('#resBox').hidden=false;
+    if(pmesh)pv.s.remove(pmesh);pmesh=meshFrom(MODEL);pv.s.add(pmesh);pv.t.set(0,.5,0);pv.dist=2.2;
+  }catch(e){msg('Xato: '+e.message);ST.building=false;ST.busy=false;}},50);
+};
+$('#redo').onclick=()=>{
+  $('#resBox').hidden=true;$('#camBox').hidden=false;ST={sensor:ST.sensor};FR=[];SEC=[];
+  $('#open').hidden=false;$('#start').hidden=true;$('#snap').hidden=true;$('#go').hidden=true;
+  msg('Kamerani qayta oching.');
+};
+
+// ---------- Kutubxona (IndexedDB) ----------
+const DB=new Promise(res=>{try{const q=indexedDB.open('scan3d',1);
+  q.onupgradeneeded=()=>q.result.createObjectStore('m',{keyPath:'id'});
+  q.onsuccess=()=>res(q.result);q.onerror=()=>res(null);}catch(e){res(null);}});
+const tx=(mode,fn)=>DB.then(db=>!db?null:new Promise(res=>{const t=db.transaction('m',mode),r=fn(t.objectStore('m'));t.oncomplete=()=>res(r.result);}));
+function renderLib(){
+  const l=$('#lib');l.innerHTML='';
+  LIB.forEach(r=>{const c=document.createElement('div');c.className='chip';
+    c.innerHTML=`<span>➕ ${r.name}</span><i>✕</i>`;
+    c.firstChild.onclick=()=>addItem(r);
+    c.lastChild.onclick=()=>{if(!confirm(r.name+" o'chirilsinmi?"))return;
+      LIB=LIB.filter(x=>x.id!==r.id);tx('readwrite',s=>s.delete(r.id));
+      ITEMS.filter(m=>m.userData.mid===r.id).forEach(removeItem);renderLib();saveHouse();};
+    l.append(c);});
+}
+$('#save').onclick=async()=>{
+  const rec={id:Date.now(),name:$('#nm').value||'Obyekt',hm:(+$('#hc').value||50)/100,pos:MODEL.pos,col:MODEL.col,nor:MODEL.nor};
+  await tx('readwrite',s=>s.put(rec));LIB.push(rec);renderLib();tab('house');addItem(rec);
+};
+
+// ---------- Uy ----------
+const hv=new Viewer($('#hv'));hv.t.set(0,1,0);hv.dist=8;hv.el=.6;hv.az=.3;
+(function room(s){
+  const box=(w,h,d,c,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshLambertMaterial({color:c}));m.position.set(x,y,z);s.add(m);};
+  box(8,.1,6,0xc9a26b,0,-.05,0);box(8,2.8,.1,0xf1ede4,0,1.4,-3);
+  box(.1,2.8,6,0xe9e3d6,-4,1.4,0);box(.1,2.8,6,0xe9e3d6,4,1.4,0);
+  box(1.6,1.2,.12,0x9fd3f2,-1.5,1.6,-2.93);box(.95,2.1,.12,0x8b5a2b,2,1.05,-2.93);
+  box(3,.02,2,0xb4545a,0,.01,.5);
+})(hv.s);
+function addItem(r,o={}){
+  const m=meshFrom(r);m.userData.mid=r.id;m.scale.setScalar(o.s||r.hm);
+  m.position.set(o.x||0,0,o.z||0);m.rotation.y=o.ry||0;
+  hv.s.add(m);ITEMS.push(m);select(m);saveHouse();
+}
+function removeItem(m){hv.s.remove(m);ITEMS=ITEMS.filter(i=>i!==m);if(SEL===m)SEL=null;}
+function select(o){ITEMS.forEach(i=>i.material.emissive.setHex(i===o?0x333366:0));SEL=o;}
+function saveHouse(){localStorage.house=JSON.stringify(ITEMS.map(m=>({mid:m.userData.mid,x:m.position.x,z:m.position.z,ry:m.rotation.y,s:m.scale.x})));}
+const plane=new THREE.Plane(new THREE.Vector3(0,1,0),0),off=new THREE.Vector3();
+const floorPt=e=>{const p=new THREE.Vector3();return hv.ray(e).ray.intersectPlane(plane,p)?p:null;};
+hv.onDown=e=>{
+  const h=hv.ray(e).intersectObjects(ITEMS,false)[0],o=h?h.object:null;select(o);
+  if(!o)return false;const p=floorPt(e);if(p)off.copy(o.position).sub(p);return true;};
+hv.onMove=e=>{if(!SEL)return;const p=floorPt(e);if(!p)return;
+  SEL.position.x=clamp(p.x+off.x,-3.8,3.8);SEL.position.z=clamp(p.z+off.z,-2.8,2.8);};
+hv.onUp=saveHouse;
+$('#rot').onclick=()=>{if(SEL){SEL.rotation.y+=Math.PI/4;saveHouse();}};
+$('#big').onclick=()=>{if(SEL){SEL.scale.multiplyScalar(1.1);saveHouse();}};
+$('#small').onclick=()=>{if(SEL){SEL.scale.multiplyScalar(1/1.1);saveHouse();}};
+$('#del').onclick=()=>{if(SEL){removeItem(SEL);saveHouse();}};
+
+// ---------- Ishga tushirish ----------
+tx('readonly',s=>s.getAll()).then(all=>{
+  LIB=all||[];renderLib();
+  try{JSON.parse(localStorage.house||'[]').forEach(o=>{const r=LIB.find(x=>x.id===o.mid);if(r)addItem(r,o);});}catch(e){}
+  select(null);
+});
+</script>
+</body>
+</html>
